@@ -218,24 +218,31 @@ class aiDAPalUIForm(ida_kernwin.PluginForm):
         outer.addWidget(container)
         self.parent.setLayout(outer)
 
+    def _get_inner_layout(self):
+        container = self.parent.layout().itemAt(0).widget()
+        return container.layout()
+
     def get_variable_states(self):
         state_values = []
-        for i in range(self.parent.layout().count()):
-            widget = self.parent.layout().itemAt(i).widget()
+        layout = self._get_inner_layout()
+        for i in range(layout.count()):
+            widget = layout.itemAt(i).widget()
             if isinstance(widget, VariableWidget):
                 state_values.extend(widget.get_states())
         return state_values
 
     def get_comment_state(self):
-        for i in range(self.parent.layout().count()):
-            widget = self.parent.layout().itemAt(i).widget()
+        layout = self._get_inner_layout()
+        for i in range(layout.count()):
+            widget = layout.itemAt(i).widget()
             if isinstance(widget, CommentWidget):
                 return widget.accepted
         return True
 
     def get_function_name_state(self):
-        for i in range(self.parent.layout().count()):
-            widget = self.parent.layout().itemAt(i).widget()
+        layout = self._get_inner_layout()
+        for i in range(layout.count()):
+            widget = layout.itemAt(i).widget()
             if isinstance(widget, FunctionNameWidget):
                 return widget.accepted
         return True
