@@ -50,18 +50,61 @@ def aidapal_get_context():
     return outstr
 
 def do_analysis(code,model_name):
+    import re
     url = ollama_url
     headers = {"Content-Type": "application/json"}
     payload = {"model": model_name, "prompt": code, "stream": False,"format":"json"}
     res = requests.post(url, headers=headers, json=payload)
     try:
-        t = res.json()['response']
-        t = json.loads(t)
-        return t
+        raw = res.json()['response']
     except:
-        # rarely this occurs, leftover from early on
-        logging.error(f'aiDAPal: error unpacking response\n{res.json()["response"]}')
+        logging.error(f'aiDAPal: failed to get response from ollama')
         return None
+    logging.debug(f'aiDAPal: raw response\n{raw}')
+    try:
+        t = json.loads(raw)
+    except Exception as e:
+        logging.error(f'aiDAPal: JSON parse error ({e}), attempting partial extraction')
+        # try to salvage function_name and comment so the UI still shows something
+        t = {}
+        m = re.search(r'"function_name"\s*:\s*"((?:[^"\\]|\\.)*)"', raw)
+        if m:
+            t['function_name'] = m.group(1)
+        m = re.search(r'"comment"\s*:\s*"((?:[^"\\]|\\.)*)"', raw)
+        if m:
+            t['comment'] = m.group(1)
+        t['variables'] = []
+        if not t.get('function_name') and not t.get('comment'):
+            return None
+    # normalize alternate schema: { "functions": [{ "original_name": ..., "comment": ... }] }
+    if 'functions' in t and isinstance(t.get('functions'), list) and t['functions']:
+        logging.warning('aiDAPal: model returned alternate "functions" schema, normalizing')
+        first = t['functions'][0]
+        if 'function_name' not in t:
+            t['function_name'] = first.get('original_name', '')
+        if 'comment' not in t:
+            t['comment'] = first.get('comment', '')
+        if 'variables' not in t:
+            t['variables'] = []
+    # normalize dict-of-dicts schema: { "ApiName": { "function": ..., "comment": ... }, ... }
+    if 'function_name' not in t and 'comment' not in t and 'variables' not in t:
+        if all(isinstance(v, dict) for v in t.values()):
+            logging.warning('aiDAPal: model returned dict-of-dicts schema, extracting longest comment')
+            longest = max((v.get('comment', '') for v in t.values()), key=len, default='')
+            if longest:
+                t['comment'] = longest
+            t.setdefault('variables', [])
+    # filter variables to only entries the UI can act on (need both keys to rename)
+    t['variables'] = [
+        v for v in t.get('variables', [])
+        if v.get('original_name') and v.get('new_name')
+    ]
+    logging.debug(f'aiDAPal: normalized -> function_name={t.get("function_name")!r} comment={bool(t.get("comment"))} variables={len(t.get("variables", []))}')
+    # nothing useful — don't open an empty window
+    if not t.get('function_name') and not t.get('comment') and not t.get('variables'):
+        logging.error('aiDAPal: could not extract anything useful from response')
+        return None
+    return t
         
 
 def do_show_ui(result,cur_func,data_address):

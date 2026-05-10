@@ -119,8 +119,10 @@ class VariableWidget(QWidget):
             row = i // columns
             col = (i % columns) * 3  # checkbox, original_name, new_name
 
-            original_name = variables[i]['original_name']
-            new_name = variables[i]['new_name']
+            original_name = variables[i].get('original_name', '')
+            new_name = variables[i].get('new_name', '')
+            if not original_name and not new_name:
+                continue
             checkbox = QtWidgets.QCheckBox()
             checkbox.setCheckState(Checked)
             checkbox.stateChanged.connect(self.accepted_state_change)
@@ -183,34 +185,38 @@ class aiDAPalUIForm(ida_kernwin.PluginForm):
         self.PopulateForm()
 
     def PopulateForm(self):
-        layout1 = QtWidgets.QVBoxLayout()
-        layout1.setAlignment(AlignTop | AlignLeft)
-
-        # ---------------------------------------------------------------
-        # Defensive key access: the LLM may omit fields in its JSON reply.
-        # Fall back to safe defaults so the UI never crashes with KeyError.
-        # ---------------------------------------------------------------
         function_name = self.ida_pal_results.get('function_name', '')
         comment       = self.ida_pal_results.get('comment', '')
         variables     = self.ida_pal_results.get('variables', [])
 
+        # Use a container widget so setLayout always works regardless of
+        # whether the IDA parent TWidget already has a layout on it.
+        container = QtWidgets.QWidget()
+        layout1 = QtWidgets.QVBoxLayout(container)
+
         if function_name:
-            layout1.addWidget(FunctionNameWidget(function_name))
+            fn_widget = FunctionNameWidget(function_name)
+            layout1.addWidget(fn_widget)
         if comment:
-            layout1.addWidget(CommentWidget(comment))
+            cmt_widget = CommentWidget(comment)
+            layout1.addWidget(cmt_widget)
         if variables:
-            layout1.addWidget(VariableWidget(variables))
+            var_widget = VariableWidget(variables)
+            layout1.addWidget(var_widget)
 
         accept_button = QtWidgets.QPushButton("Accept")
         cancel_button = QtWidgets.QPushButton("Cancel")
 
         layout1.addStretch()
-
         accept_button.clicked.connect(self.on_accept_clicked)
         cancel_button.clicked.connect(self.on_cancel_clicked)
         layout1.addWidget(accept_button)
         layout1.addWidget(cancel_button)
-        self.parent.setLayout(layout1)
+
+        outer = QtWidgets.QVBoxLayout()
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(container)
+        self.parent.setLayout(outer)
 
     def get_variable_states(self):
         state_values = []
@@ -237,10 +243,11 @@ class aiDAPalUIForm(ida_kernwin.PluginForm):
     def on_accept_clicked(self):
         vstates = self.get_variable_states()
         variables = self.ida_pal_results.get('variables', [])
-        for v in range(len(variables)):
-            variables[v]["accepted"] = vstates[v]
-            if vstates[v]:
-                print(f'{variables[v]["original_name"]} -> {variables[v]["new_name"]}: Accepted')
+        valid = [var for var in variables if var.get('original_name') or var.get('new_name')]
+        for var, state in zip(valid, vstates):
+            var["accepted"] = state
+            if state:
+                print(f'{var.get("original_name", "")} -> {var.get("new_name", "")}: Accepted')
 
         if not self.get_comment_state():
             self.ida_pal_results["comment"] = None
@@ -262,22 +269,30 @@ class aiDAPalUIForm(ida_kernwin.PluginForm):
             if self.current_data:
                 ida_bytes.set_cmt(self.current_data, new_cmt, False)
 
+        # skip rename if model returned an IDA auto-generated name
+        _IDA_PREFIXES = ('sub_', 'loc_', 'byte_', 'word_', 'dword_', 'qword_',
+                         'unk_', 'off_', 'seg_', 'asc_', 'str_', 'nullsub_')
         function_name = self.ida_pal_results.get("function_name")
         if function_name and self.current_func:
-            new_name = f"{function_name}_{hex(self.current_func.entry_ea)[2:]}"
-            print(f'Trying function name update {new_name}')
-            if ida_name.set_name(self.current_func.entry_ea, new_name, ida_name.SN_CHECK):
-                print('successfully updated name')
+            if any(function_name.lower().startswith(p) for p in _IDA_PREFIXES):
+                print(f'aiDAPal: skipping rename, model returned auto-generated name: {function_name}')
+            else:
+                new_name = f"{function_name}_{hex(self.current_func.entry_ea)[2:]}"
+                print(f'Trying function name update {new_name}')
+                if ida_name.set_name(self.current_func.entry_ea, new_name, ida_name.SN_CHECK):
+                    print('successfully updated name')
 
         for var in self.ida_pal_results.get('variables', []):
             if var.get('accepted'):
-                if self.current_func:
-                    print(f"trying function var - {var['original_name']} - {var['new_name']}")
-                    if ida_hexrays.rename_lvar(self.current_func.entry_ea, var['original_name'], var['new_name']):
-                        print(f"Updated function var - {var['original_name']} - {var['new_name']}")
-                if self.current_data:
-                    ida_name.set_name(self.current_data, var['new_name'], ida_name.SN_CHECK)
-                    print(f"trying data var - {var['original_name']} - {var['new_name']}")
+                orig = var.get('original_name', '')
+                new  = var.get('new_name', '')
+                if self.current_func and orig and new:
+                    print(f"trying function var - {orig} - {new}")
+                    if ida_hexrays.rename_lvar(self.current_func.entry_ea, orig, new):
+                        print(f"Updated function var - {orig} - {new}")
+                if self.current_data and new:
+                    ida_name.set_name(self.current_data, new, ida_name.SN_CHECK)
+                    print(f"trying data var - {orig} - {new}")
 
         if self.current_func:
             self.current_func.refresh_func_ctext()
