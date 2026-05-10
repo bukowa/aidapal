@@ -94,7 +94,14 @@ def do_analysis(code,model_name):
             if longest:
                 t['comment'] = longest
             t.setdefault('variables', [])
+    # model sometimes outputs _function_name instead of function_name
+    if 'function_name' not in t and '_function_name' in t:
+        t['function_name'] = t['_function_name']
     # filter variables to only entries the UI can act on (need both keys to rename)
+    # also accept renamed_name as an alias for new_name
+    for v in t.get('variables', []):
+        if 'new_name' not in v and 'renamed_name' in v:
+            v['new_name'] = v['renamed_name']
     t['variables'] = [
         v for v in t.get('variables', [])
         if v.get('original_name') and v.get('new_name')
